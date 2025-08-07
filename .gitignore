@@ -1,1 +1,7 @@
-wp-content/plugins/user-registration/vendor/
+wp-content/uploads/
+wp-content/cache/
+wp-content/upgrade/
+wp-content/plugins/*/vendor/
+.env
+*.log
+*.sql
