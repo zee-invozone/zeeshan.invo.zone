@@ -1,24 +1,79 @@
-name: Deploy WordPress
+name: WordPress Deploy
 
 on:
   push:
-    branches:
-      - main  # change to your branch name if different
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Deploy via SSH
+      - name: Test SSH connection
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
           script: |
-            cd /var/www/html
-            git pull origin main
+            echo "=== SSH connection test ==="
+            whoami
+            hostname
+            echo "OK"
+
+      - name: Backup remote /var/www/html
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -e
+            timestamp=$(date +'%Y%m%d_%H%M%S')
+            BACKUP_PATH="/home/${USER:-$USER}/wp_backup_${timestamp}.tar.gz"
+            echo "Creating backup -> ${BACKUP_PATH}"
+            sudo tar -czf "${BACKUP_PATH}" -C /var/www html
+            echo "Backup completed: ${BACKUP_PATH}"
+
+      - name: Deploy — pull latest on server
+        uses: appleboy/ssh-action@v0.1.10
+        with:
+          host: ${{ secrets.SERVER_IP }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          script: |
+            set -e
+            echo "=== Deploy: updating /var/www/html ==="
+            if [ -d /var/www/html/.git ]; then
+              cd /var/www/html
+              git fetch --all --prune
+              git reset --hard origin/main
+            else
+              echo "No .git found in /var/www/html — copying files instead"
+              # fallback: replace files (careful)
+              sudo rm -rf /tmp/wp_deploy || true
+              mkdir -p /tmp/wp_deploy
+              # the runner checkout is available in /github/workspace
+              cp -a /github/workspace/. /tmp/wp_deploy/
+              sudo rsync -a --delete /tmp/wp_deploy/ /var/www/html/
+            fi
+
+            echo "Set ownership and permissions"
+            sudo chown -R www-data:www-data /var/www/html
+            sudo find /var/www/html -type d -exec chmod 755 {} \;
+            sudo find /var/www/html -type f -exec chmod 644 {} \;
+
+            echo "Restarting webserver if present"
+            sudo systemctl restart apache2 || sudo systemctl restart nginx || true
+            echo "Deploy finished"
+
+      - name: Notify completion
+        run: echo "Deployment job finished (check Actions log & site)."
