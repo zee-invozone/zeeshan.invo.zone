@@ -8,26 +8,13 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Test SSH connection
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
-          script: |
-            echo "=== SSH connection test ==="
-            whoami
-            hostname
-            echo "OK"
-
-      - name: Backup remote /var/www/html
+      - name: Deploy to server
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.SERVER_IP }}
@@ -36,44 +23,46 @@ jobs:
           port: 22
           script: |
             set -e
-            timestamp=$(date +'%Y%m%d_%H%M%S')
-            BACKUP_PATH="/home/${USER:-$USER}/wp_backup_${timestamp}.tar.gz"
-            echo "Creating backup -> ${BACKUP_PATH}"
-            sudo tar -czf "${BACKUP_PATH}" -C /var/www html
-            echo "Backup completed: ${BACKUP_PATH}"
-
-      - name: Deploy — pull latest on server
-        uses: appleboy/ssh-action@v0.1.10
-        with:
-          host: ${{ secrets.SERVER_IP }}
-          username: ${{ secrets.SERVER_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          port: 22
-          script: |
-            set -e
-            echo "=== Deploy: updating /var/www/html ==="
-            if [ -d /var/www/html/.git ]; then
-              cd /var/www/html
-              git fetch --all --prune
-              git reset --hard origin/main
-            else
-              echo "No .git found in /var/www/html — copying files instead"
-              # fallback: replace files (careful)
-              sudo rm -rf /tmp/wp_deploy || true
-              mkdir -p /tmp/wp_deploy
-              # the runner checkout is available in /github/workspace
-              cp -a /github/workspace/. /tmp/wp_deploy/
-              sudo rsync -a --delete /tmp/wp_deploy/ /var/www/html/
-            fi
-
-            echo "Set ownership and permissions"
+            echo "=== WordPress Deployment Started ==="
+            
+            # Create backup
+            echo "Creating backup..."
+            BACKUP_DIR="/home/$USER/backups"
+            mkdir -p "$BACKUP_DIR"
+            TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+            sudo tar -czf "$BACKUP_DIR/wp_backup_$TIMESTAMP.tar.gz" -C /var/www html
+            
+            # Deploy files
+            echo "Deploying files..."
+            TEMP_DIR="/tmp/wp_deploy_$TIMESTAMP"
+            mkdir -p "$TEMP_DIR"
+            
+            # Copy files from GitHub workspace
+            cp -a /github/workspace/. "$TEMP_DIR/"
+            
+            # Sync to web directory (exclude sensitive files)
+            sudo rsync -a --delete \
+              --exclude ".git/" \
+              --exclude ".github/" \
+              --exclude "wp-config.php" \
+              "$TEMP_DIR/" /var/www/html/
+            
+            # Set permissions
+            echo "Setting permissions..."
             sudo chown -R www-data:www-data /var/www/html
             sudo find /var/www/html -type d -exec chmod 755 {} \;
             sudo find /var/www/html -type f -exec chmod 644 {} \;
-
-            echo "Restarting webserver if present"
-            sudo systemctl restart apache2 || sudo systemctl restart nginx || true
-            echo "Deploy finished"
-
-      - name: Notify completion
-        run: echo "Deployment job finished (check Actions log & site)."
+            
+            # Secure wp-config.php
+            if [ -f "/var/www/html/wp-config.php" ]; then
+              sudo chmod 600 /var/www/html/wp-config.php
+            fi
+            
+            # Restart web server
+            echo "Restarting web server..."
+            sudo systemctl restart apache2 2>/dev/null || sudo systemctl restart nginx 2>/dev/null || echo "No web server to restart"
+            
+            # Cleanup
+            sudo rm -rf "$TEMP_DIR"
+            
+            echo "=== Deployment Completed Successfully ==="
