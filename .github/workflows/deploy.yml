@@ -8,13 +8,13 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Deploy to server
+      - name: Deploy to WordPress server
         uses: appleboy/ssh-action@v0.1.10
         with:
           host: ${{ secrets.SERVER_IP }}
@@ -22,47 +22,40 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           port: 22
           script: |
-            set -e
-            echo "=== WordPress Deployment Started ==="
+            echo "🚀 WordPress Deployment Started"
             
-            # Create backup
-            echo "Creating backup..."
-            BACKUP_DIR="/home/$USER/backups"
-            mkdir -p "$BACKUP_DIR"
-            TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
-            sudo tar -czf "$BACKUP_DIR/wp_backup_$TIMESTAMP.tar.gz" -C /var/www html
-            
-            # Deploy files
-            echo "Deploying files..."
-            TEMP_DIR="/tmp/wp_deploy_$TIMESTAMP"
+            # Create temporary deployment directory
+            TEMP_DIR="/tmp/wp_deploy_$(date +%s)"
             mkdir -p "$TEMP_DIR"
             
             # Copy files from GitHub workspace
             cp -a /github/workspace/. "$TEMP_DIR/"
             
-            # Sync to web directory (exclude sensitive files)
+            # Navigate to web directory
+            cd /var/www/html
+            
+            # Create backup of current site
+            BACKUP_DIR="/home/$USER/backups"
+            mkdir -p "$BACKUP_DIR"
+            TIMESTAMP=$(date +'%Y%m%d_%H%M%S')
+            sudo tar -czf "$BACKUP_DIR/wp_backup_$TIMESTAMP.tar.gz" -C /var/www html
+            
+            # Sync files (exclude sensitive files)
             sudo rsync -a --delete \
               --exclude ".git/" \
               --exclude ".github/" \
               --exclude "wp-config.php" \
               "$TEMP_DIR/" /var/www/html/
             
-            # Set permissions
-            echo "Setting permissions..."
+            # Set proper permissions
             sudo chown -R www-data:www-data /var/www/html
             sudo find /var/www/html -type d -exec chmod 755 {} \;
             sudo find /var/www/html -type f -exec chmod 644 {} \;
             
-            # Secure wp-config.php
-            if [ -f "/var/www/html/wp-config.php" ]; then
-              sudo chmod 600 /var/www/html/wp-config.php
-            fi
-            
-            # Restart web server
-            echo "Restarting web server..."
-            sudo systemctl restart apache2 2>/dev/null || sudo systemctl restart nginx 2>/dev/null || echo "No web server to restart"
-            
-            # Cleanup
+            # Cleanup temp directory
             sudo rm -rf "$TEMP_DIR"
             
-            echo "=== Deployment Completed Successfully ==="
+            # Restart web server
+            sudo systemctl restart apache2 2>/dev/null || sudo systemctl restart nginx 2>/dev/null || echo "Web server restart skipped"
+            
+            echo "✅ WordPress Deployment Completed Successfully"
